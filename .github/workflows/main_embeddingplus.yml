@@ -21,15 +21,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # OPTIONAL — only if you have a build step
       - name: Build app
         run: npm run build --if-present
 
-      # Create clean artifact (NO .github folder!)
       - name: Prepare deployment package
         run: |
           mkdir deploy
-          cp -R server.js package.json package-lock.json deploy/
+          cp server.js package.json package-lock.json deploy/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
