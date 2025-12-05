@@ -7,146 +7,84 @@ const OpenAI = require('openai');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// ---------------------------------------------------------
-// PostgreSQL Connection (Azure Flexible Server + pgvector)
-// ---------------------------------------------------------
+// PostgreSQL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// ---------------------------------------------------------
-// OpenAI Client (supports OpenAI & Azure OpenAI)
-// ---------------------------------------------------------
+// OpenAI
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL || undefined
 });
 
-// ---------------------------------------------------------
-// POST /embed → Generate embedding + Insert into PostgreSQL
-// ---------------------------------------------------------
+// -------------------------
+// /embed
+// -------------------------
 app.post('/embed', async (req, res) => {
   try {
-    const { ticketNumber, summary, model } = req.body;
+    const { ticketNumber, summary } = req.body;
 
-    if (!summary || typeof summary !== 'string') {
-      return res.status(400).json({ error: 'summary (string) is required' });
-    }
-
-    const chosenModel =
-      model ||
-      process.env.OPENAI_MODEL ||
-      'text-embedding-3-small';
-
-    // Generate embedding
-    const result = await client.embeddings.create({
-      model: chosenModel,
+    const embed = await client.embeddings.create({
+      model: process.env.OPENAI_MODEL || 'text-embedding-3-small',
       input: summary
     });
 
-    const embedding = result?.data?.[0]?.embedding;
+    const embedding = embed.data[0].embedding;
 
-    if (!Array.isArray(embedding)) {
-      return res.status(500).json({
-        error: 'Embedding array missing from provider response'
-      });
-    }
-
-    // Insert into PostgreSQL using pgvector `::vector` cast
     const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
       VALUES ($1, $2, $3::vector)
       RETURNING id;
     `;
 
-    const db = await pool.query(sql, [
-      ticketNumber ?? null,
+    const result = await pool.query(sql, [
+      ticketNumber,
       summary,
       embedding
     ]);
 
-    res.status(200).json({
-      ok: true,
-      id: db.rows[0].id,
-      ticketNumber: ticketNumber ?? null,
-      dims: embedding.length,
-      model: chosenModel
-    });
+    res.json({ ok: true, id: result.rows[0].id });
 
   } catch (err) {
-    console.error('❌ Embed error:', err);
-    res.status(500).json({
-      error: err.message,
-      details: err.response?.data
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------------------------------------------------------
-// POST /match → Find similar tickets (vector search)
-// ---------------------------------------------------------
+// -------------------------
+// /match
+// -------------------------
 app.post('/match', async (req, res) => {
   try {
-    const { summary, model } = req.body;
+    const { summary } = req.body;
 
-    if (!summary || summary.length < 5) {
-      return res.status(400).json({
-        error: 'summary must be at least 5 characters'
-      });
-    }
-
-    const chosenModel =
-      model ||
-      process.env.OPENAI_MODEL ||
-      'text-embedding-3-small';
-
-    // Generate embedding for query text
-    const result = await client.embeddings.create({
-      model: chosenModel,
+    const embed = await client.embeddings.create({
+      model: process.env.OPENAI_MODEL || 'text-embedding-3-small',
       input: summary
     });
 
-    const queryEmbedding = result.data[0].embedding;
+    const queryEmbedding = embed.data[0].embedding;
 
-    // Vector similarity search (<=> distance operator)
     const sql = `
-      SELECT
-        ticket_number,
-        summary,
-        embedding <=> $1 AS distance
+      SELECT ticket_number, summary, embedding <=> $1 AS distance
       FROM ticket_embeddings
       ORDER BY embedding <=> $1
       LIMIT 5;
     `;
 
-    const db = await pool.query(sql, [queryEmbedding]);
+    const result = await pool.query(sql, [queryEmbedding]);
 
-    res.status(200).json({
-      ok: true,
-      count: db.rows.length,
-      matches: db.rows
-    });
+    res.json({ ok: true, matches: result.rows });
 
   } catch (err) {
-    console.error('❌ Match error:', err);
-    res.status(500).json({
-      error: err.message,
-      details: err.response?.data
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------------------------------------------------------
-// Health Check + Default Route
-// ---------------------------------------------------------
-app.get('/health', (_req, res) => res.status(200).send('OK'));
-app.get('/', (_req, res) => res.send('EmbeddingPlus API is running'));
+// -------------------------
+app.get('/health', (req, res) => res.send('OK'));
+app.get('/', (req, res) => res.send('EmbeddingPlus API is running'));
 
-// ---------------------------------------------------------
-// Start Server
-// ---------------------------------------------------------
 const port = process.env.PORT || 8080;
-app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
-});
+app.listen(port, () => console.log(`Server running on ${port}`));
