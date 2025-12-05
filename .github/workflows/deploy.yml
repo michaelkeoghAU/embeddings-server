@@ -1,4 +1,5 @@
 
+# .github/workflows/deploy.yml
 name: Deploy Node app to Azure Web App (EmbeddingPlus)
 
 on:
@@ -17,15 +18,21 @@ jobs:
       - name: Use Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'   # or '18' to match your Azure runtime
+          node-version: '20'   # match your Azure runtime (or use '18')
 
       - name: Install dependencies
-        run: npm ci
-        # If no package-lock.json, use: npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "Lockfile present -> using npm ci"
+            npm ci --no-audit --no-fund
+          else
+            echo "No lockfile -> using npm install"
+            npm install --no-audit --no-fund
+          fi
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'EmbeddingPlus'                         # exact name of your Web App
+          app-name: 'EmbeddingPlus'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
-          package: '.'                                      # deploy repo root
+          package: '.'
