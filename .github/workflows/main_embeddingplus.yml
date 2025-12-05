@@ -59,5 +59,7 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
-          package: .
+          package: deploy/
+
+
 
