@@ -30,7 +30,7 @@ jobs:
       - name: Prepare deployment package
         run: |
           mkdir -p deploy
-          cp -v server.js package.json package-lock.json deploy/
+          cp -R . deploy/
           echo "Contents of deploy folder:"
           ls -l deploy
 
@@ -71,4 +71,5 @@ jobs:
         with:
           app-name: 'EmbeddingPlus'
           package: deploy
+
 
