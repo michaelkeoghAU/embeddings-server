@@ -1,51 +1,48 @@
 // server.js
 require('dotenv').config();
 const express = require('express');
-const OpenAI = require('openai');
 const { Pool } = require('pg');
+const OpenAI = require('openai');
 
 const app = express();
-app.use(express.json({ limit: '1mb' })); // Parse JSON safely
+app.use(express.json({ limit: '2mb' }));
 
-//---------------------------------------------
-// OpenAI Client Setup (Supports Azure + OpenAI)
-//---------------------------------------------
+// ---------------------------------------------
+// PostgreSQL Connection (Azure Flexible Server)
+// ---------------------------------------------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+// ---------------------------------------------
+// OpenAI Client Setup (OpenAI or Azure OpenAI)
+// ---------------------------------------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL || undefined
 });
 
-//---------------------------------------------
-// PostgreSQL Connection (Azure PG + SSL)
-//---------------------------------------------
-const pool = new Pool({
-  host: process.env.PGHOST,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE,
-  port: process.env.PGPORT || 5432,
-  ssl: { rejectUnauthorized: false }
-});
-
-//====================================================
-// POST /embed → Generate embeddings (no DB insert here)
-//====================================================
+// ---------------------------------------------
+// POST /embed  → create embedding + store in DB
+// ---------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
-    const { ticketNumber, text, model } = req.body;
+    const { ticketNumber, summary, model } = req.body;
 
-    if (!text || typeof text !== 'string') {
-      return res.status(400).json({ error: 'text (string) is required' });
+    if (!summary || typeof summary !== 'string') {
+      return res.status(400).json({ error: 'summary (string) is required' });
     }
 
     const chosenModel =
       model ||
       process.env.OPENAI_MODEL ||
-      'text-embedding-3-small'; // Default for OpenAI
+      'text-embedding-3-small';
 
+    // Create embedding
     const result = await client.embeddings.create({
       model: chosenModel,
-      input: text
+      input: summary
     });
 
     const embedding = result?.data?.[0]?.embedding;
@@ -53,158 +50,97 @@ app.post('/embed', async (req, res) => {
       return res.status(500).json({ error: 'No embedding returned from provider' });
     }
 
-    return res.status(200).json({
-      ok: true,
-      ticketNumber: ticketNumber ?? null,
-      model: chosenModel,
-      dims: embedding.length,
-      embedding
-    });
-  } catch (err) {
-    console.error('Embed error:', err);
-    const status = err.status ?? 500;
-    return res.status(status).json({
-      error: err.message || 'Embedding failed',
-      details: err.response?.data || undefined
-    });
-  }
-});
-
-//====================================================
-// POST /match → Embedding → pgvector search → AI Note
-//====================================================
-app.post('/match', async (req, res) => {
-  try {
-    const { ticketNumber, text, topN } = req.body;
-
-    if (!ticketNumber || !text) {
-      return res.status(400).json({
-        error: "ticketNumber and text are required"
-      });
-    }
-
-    const limit = Math.min(topN || 5, 20); // Safety limit
-
-    //----------------------------------------------------
-    // 1. Generate embedding for incoming ticket text
-    //----------------------------------------------------
-    const embedResponse = await client.embeddings.create({
-      model: process.env.OPENAI_MODEL || "text-embedding-3-large",
-      input: text
-    });
-
-    const embedding = embedResponse.data[0].embedding;
-    const embeddingVector = `[${embedding.join(",")}]`;
-
-    //----------------------------------------------------
-    // 2. Vector Similarity Search using pgvector
-    //----------------------------------------------------
-    const sql = `
-      SELECT 
-        ticket_number,
-        subject,
-        body,
-        embedding <-> $1::vector AS distance
-      FROM ticket_embeddings
-      WHERE ticket_number <> $2
-      ORDER BY embedding <-> $1::vector
-      LIMIT $3;
+    // Insert into PostgreSQL
+    const insertSQL = `
+      INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
+      VALUES ($1, $2, $3)
+      RETURNING id;
     `;
 
-    const { rows } = await pool.query(sql, [
-      embeddingVector,
-      ticketNumber,
-      limit
+    await pool.query(insertSQL, [
+      ticketNumber ?? null,
+      summary,
+      embedding
     ]);
 
-    //----------------------------------------------------
-    // 3. Convert pgvector distances → similarity scores
-    //----------------------------------------------------
-    const matches = rows.map(r => ({
-      ticketNumber: r.ticket_number,
-      subject: r.subject,
-      text: r.body,
-      distance: Number(r.distance),
-      similarity: 1 / (1 + Number(r.distance))
-    }));
-
-    //----------------------------------------------------
-    // 4. Build match summary for the LLM
-    //----------------------------------------------------
-    const summary = matches
-      .map(
-        (m, i) =>
-          `${i + 1}. Ticket ${m.ticketNumber} (${(m.similarity * 100).toFixed(
-            1
-          )}% similar)\n${m.text}`
-      )
-      .join("\n\n");
-
-    //----------------------------------------------------
-    // 5. Default internal note if no matches found
-    //----------------------------------------------------
-    let internalNote = "No historical matches found.";
-
-    //----------------------------------------------------
-    // 6. Let GPT generate a ConnectWise internal note
-    //----------------------------------------------------
-    if (matches.length > 0) {
-      const aiResponse = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a senior MSP technician. Write short, structured internal notes for ConnectWise tickets."
-          },
-          {
-            role: "user",
-            content: `
-Current Ticket (${ticketNumber}):
-"${text}"
-
-Historical Matches:
-${summary}
-
-Write a ConnectWise internal note including:
-- Likely root cause
-- 2–4 troubleshooting steps
-- References to matched ticket numbers
-- Keep it concise (5–8 lines max)
-`
-          }
-        ]
-      });
-
-      internalNote = aiResponse.choices[0].message.content.trim();
-    }
-
-    //----------------------------------------------------
-    // 7. Return result to CW / Power Automate
-    //----------------------------------------------------
-    return res.json({
+    res.status(200).json({
       ok: true,
-      ticketNumber,
-      matchCount: matches.length,
-      matches,
-      internalNote
+      ticketNumber: ticketNumber ?? null,
+      dims: embedding.length,
+      model: chosenModel,
+      embedding
     });
 
   } catch (err) {
-    console.error("MATCH ERROR:", err);
-    return res.status(500).json({ error: err.message });
+    console.error('Embed error:', err);
+    res.status(500).json({
+      error: err.message,
+      details: err.response?.data
+    });
   }
 });
 
-//====================================================
-// Root / Health Check Routes
-//====================================================
-app.get('/', (_req, res) => res.send('EmbeddingPlus server is up'));
-app.get('/health', (_req, res) => res.status(200).send('OK'));
+// ---------------------------------------------
+// POST /match  → embedding similarity search
+// ---------------------------------------------
+app.post('/match', async (req, res) => {
+  try {
+    const { summary, model } = req.body;
 
-//====================================================
-// Azure App Service listens on injected PORT
-//====================================================
+    if (!summary || summary.length < 5) {
+      return res.status(400).json({ error: 'summary must be at least 5 characters' });
+    }
+
+    // Step 1: Embed the incoming text
+    const chosenModel =
+      model ||
+      process.env.OPENAI_MODEL ||
+      'text-embedding-3-small';
+
+    const result = await client.embeddings.create({
+      model: chosenModel,
+      input: summary
+    });
+
+    const queryEmbedding = result.data[0].embedding;
+
+    // Step 2: Vector similarity search using pgvector <=> operator
+    const searchSQL = `
+      SELECT
+        ticket_number,
+        summary,
+        embedding <=> $1 AS distance
+      FROM ticket_embeddings
+      ORDER BY embedding <=> $1
+      LIMIT 5;
+    `;
+
+    const dbResult = await pool.query(searchSQL, [queryEmbedding]);
+
+    res.json({
+      ok: true,
+      count: dbResult.rows.length,
+      matches: dbResult.rows
+    });
+
+  } catch (err) {
+    console.error('Match error:', err);
+    res.status(500).json({
+      error: err.message,
+      details: err.response?.data
+    });
+  }
+});
+
+// ---------------------------------------------
+// Health Check + Root Route
+// ---------------------------------------------
+app.get('/health', (_req, res) => res.status(200).send('OK'));
+app.get('/', (_req, res) => res.send('EmbeddingPlus API is running'));
+
+// ---------------------------------------------
+// Server Startup
+// ---------------------------------------------
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
