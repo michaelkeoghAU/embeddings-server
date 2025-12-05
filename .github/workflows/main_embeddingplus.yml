@@ -11,7 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Ensures server.js, package.json, etc. are present
 
       - name: Use Node.js 20
         uses: actions/setup-node@v3
@@ -26,8 +29,10 @@ jobs:
 
       - name: Prepare deployment package
         run: |
-          mkdir deploy
-          cp server.js package.json package-lock.json deploy/
+          mkdir -p deploy
+          cp -v server.js package.json package-lock.json deploy/
+          echo "Contents of deploy folder:"
+          ls -l deploy
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -47,6 +52,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: node-app
+          path: deploy
+
+      - name: Show downloaded files
+        run: |
+          echo "Files downloaded into deploy folder:"
+          ls -l deploy
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -59,8 +70,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
-          package: node-app/
-
-
-
-
+          package: deploy/
