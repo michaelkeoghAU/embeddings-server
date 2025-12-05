@@ -26,10 +26,14 @@ app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary } = req.body;
 
+   console.log("MODEL IN USE before:", process.env.OPENAI_MODEL);
+ 
     const embed = await client.embeddings.create({
       model: process.env.OPENAI_MODEL || 'text-embedding-3-small',
       input: summary
     });
+
+   console.log("MODEL IN USE after:", process.env.OPENAI_MODEL);
 
     const embedding = embed.data[0].embedding;
 
