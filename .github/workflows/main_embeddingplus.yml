@@ -18,13 +18,17 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Verify repo contents
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          pwd
+          ls -la
+          test -f package.json || (echo "package.json not found at repo root"; exit 1)
+          node -v
+          npm -v
+          cat package.json
+
+      - name: Install dependencies
+        run: npm install
 
       - name: Build (if present)
         run: npm run build --if-present
@@ -40,4 +44,3 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
-          package: '.'
