@@ -38,6 +38,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Download artifact
@@ -57,3 +60,4 @@ jobs:
         with:
           app-name: 'EmbeddingPlus'
           package: .
+
