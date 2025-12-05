@@ -17,11 +17,11 @@ jobs:
       - name: Use Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'   # or '18' to match your Azure runtime
+          node-version: '20'   # or '18' to match Azure runtime
 
+      # ✅ FIX: Use npm install instead of npm ci (since no lock file)
       - name: Install dependencies
-        run: npm ci
-        # If no package-lock.json, use: npm install
+        run: npm install
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
