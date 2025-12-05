@@ -8,19 +8,15 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 // ---------------------------------------------------------
-// PostgreSQL Connection (Using Azure App Settings: PGHOST,...)
+// PostgreSQL Connection (Azure Flexible Server + pgvector)
 // ---------------------------------------------------------
 const pool = new Pool({
-  host: process.env.PGHOST,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE,
-  port: parseInt(process.env.PGPORT || "5432", 10),
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
 // ---------------------------------------------------------
-// OpenAI Client (OpenAI or Azure OpenAI compatible)
+// OpenAI Client (supports OpenAI & Azure OpenAI)
 // ---------------------------------------------------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -28,7 +24,7 @@ const client = new OpenAI({
 });
 
 // ---------------------------------------------------------
-// POST /embed → Create embedding + store in PostgreSQL
+// POST /embed → Generate embedding + Insert into PostgreSQL
 // ---------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
@@ -50,18 +46,21 @@ app.post('/embed', async (req, res) => {
     });
 
     const embedding = result?.data?.[0]?.embedding;
+
     if (!Array.isArray(embedding)) {
-      return res.status(500).json({ error: 'No embedding returned from provider' });
+      return res.status(500).json({
+        error: 'Embedding array missing from provider response'
+      });
     }
 
-    // Insert into Postgres
+    // Insert into PostgreSQL using pgvector `::vector` cast
     const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
-      VALUES ($1, $2, $3)
+      VALUES ($1, $2, $3::vector)
       RETURNING id;
     `;
 
-    await pool.query(sql, [
+    const db = await pool.query(sql, [
       ticketNumber ?? null,
       summary,
       embedding
@@ -69,14 +68,14 @@ app.post('/embed', async (req, res) => {
 
     res.status(200).json({
       ok: true,
+      id: db.rows[0].id,
       ticketNumber: ticketNumber ?? null,
       dims: embedding.length,
-      model: chosenModel,
-      embedding
+      model: chosenModel
     });
 
   } catch (err) {
-    console.error('Embed error:', err);
+    console.error('❌ Embed error:', err);
     res.status(500).json({
       error: err.message,
       details: err.response?.data
@@ -85,14 +84,16 @@ app.post('/embed', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// POST /match → Similarity search using pgvector
+// POST /match → Find similar tickets (vector search)
 // ---------------------------------------------------------
 app.post('/match', async (req, res) => {
   try {
     const { summary, model } = req.body;
 
     if (!summary || summary.length < 5) {
-      return res.status(400).json({ error: 'summary must be at least 5 characters' });
+      return res.status(400).json({
+        error: 'summary must be at least 5 characters'
+      });
     }
 
     const chosenModel =
@@ -100,7 +101,7 @@ app.post('/match', async (req, res) => {
       process.env.OPENAI_MODEL ||
       'text-embedding-3-small';
 
-    // Create query embedding
+    // Generate embedding for query text
     const result = await client.embeddings.create({
       model: chosenModel,
       input: summary
@@ -108,8 +109,8 @@ app.post('/match', async (req, res) => {
 
     const queryEmbedding = result.data[0].embedding;
 
-    // Search for similar embeddings
-    const searchSQL = `
+    // Vector similarity search (<=> distance operator)
+    const sql = `
       SELECT
         ticket_number,
         summary,
@@ -119,16 +120,16 @@ app.post('/match', async (req, res) => {
       LIMIT 5;
     `;
 
-    const matches = await pool.query(searchSQL, [queryEmbedding]);
+    const db = await pool.query(sql, [queryEmbedding]);
 
-    res.json({
+    res.status(200).json({
       ok: true,
-      count: matches.rows.length,
-      matches: matches.rows
+      count: db.rows.length,
+      matches: db.rows
     });
 
   } catch (err) {
-    console.error('Match error:', err);
+    console.error('❌ Match error:', err);
     res.status(500).json({
       error: err.message,
       details: err.response?.data
@@ -137,7 +138,7 @@ app.post('/match', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// Health + Default Route
+// Health Check + Default Route
 // ---------------------------------------------------------
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 app.get('/', (_req, res) => res.send('EmbeddingPlus API is running'));
@@ -147,5 +148,5 @@ app.get('/', (_req, res) => res.send('EmbeddingPlus API is running'));
 // ---------------------------------------------------------
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
