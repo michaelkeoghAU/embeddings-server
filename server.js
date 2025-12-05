@@ -7,25 +7,29 @@ const OpenAI = require('openai');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// ---------------------------------------------
-// PostgreSQL Connection (Azure Flexible Server)
-// ---------------------------------------------
+// ---------------------------------------------------------
+// PostgreSQL Connection (Using Azure App Settings: PGHOST,...)
+// ---------------------------------------------------------
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  host: process.env.PGHOST,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  database: process.env.PGDATABASE,
+  port: parseInt(process.env.PGPORT || "5432", 10),
   ssl: { rejectUnauthorized: false }
 });
 
-// ---------------------------------------------
-// OpenAI Client Setup (OpenAI or Azure OpenAI)
-// ---------------------------------------------
+// ---------------------------------------------------------
+// OpenAI Client (OpenAI or Azure OpenAI compatible)
+// ---------------------------------------------------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL || undefined
 });
 
-// ---------------------------------------------
-// POST /embed  → create embedding + store in DB
-// ---------------------------------------------
+// ---------------------------------------------------------
+// POST /embed → Create embedding + store in PostgreSQL
+// ---------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary, model } = req.body;
@@ -39,7 +43,7 @@ app.post('/embed', async (req, res) => {
       process.env.OPENAI_MODEL ||
       'text-embedding-3-small';
 
-    // Create embedding
+    // Generate embedding
     const result = await client.embeddings.create({
       model: chosenModel,
       input: summary
@@ -50,14 +54,14 @@ app.post('/embed', async (req, res) => {
       return res.status(500).json({ error: 'No embedding returned from provider' });
     }
 
-    // Insert into PostgreSQL
-    const insertSQL = `
+    // Insert into Postgres
+    const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
       VALUES ($1, $2, $3)
       RETURNING id;
     `;
 
-    await pool.query(insertSQL, [
+    await pool.query(sql, [
       ticketNumber ?? null,
       summary,
       embedding
@@ -80,9 +84,9 @@ app.post('/embed', async (req, res) => {
   }
 });
 
-// ---------------------------------------------
-// POST /match  → embedding similarity search
-// ---------------------------------------------
+// ---------------------------------------------------------
+// POST /match → Similarity search using pgvector
+// ---------------------------------------------------------
 app.post('/match', async (req, res) => {
   try {
     const { summary, model } = req.body;
@@ -91,12 +95,12 @@ app.post('/match', async (req, res) => {
       return res.status(400).json({ error: 'summary must be at least 5 characters' });
     }
 
-    // Step 1: Embed the incoming text
     const chosenModel =
       model ||
       process.env.OPENAI_MODEL ||
       'text-embedding-3-small';
 
+    // Create query embedding
     const result = await client.embeddings.create({
       model: chosenModel,
       input: summary
@@ -104,7 +108,7 @@ app.post('/match', async (req, res) => {
 
     const queryEmbedding = result.data[0].embedding;
 
-    // Step 2: Vector similarity search using pgvector <=> operator
+    // Search for similar embeddings
     const searchSQL = `
       SELECT
         ticket_number,
@@ -115,12 +119,12 @@ app.post('/match', async (req, res) => {
       LIMIT 5;
     `;
 
-    const dbResult = await pool.query(searchSQL, [queryEmbedding]);
+    const matches = await pool.query(searchSQL, [queryEmbedding]);
 
     res.json({
       ok: true,
-      count: dbResult.rows.length,
-      matches: dbResult.rows
+      count: matches.rows.length,
+      matches: matches.rows
     });
 
   } catch (err) {
@@ -132,15 +136,15 @@ app.post('/match', async (req, res) => {
   }
 });
 
-// ---------------------------------------------
-// Health Check + Root Route
-// ---------------------------------------------
+// ---------------------------------------------------------
+// Health + Default Route
+// ---------------------------------------------------------
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 app.get('/', (_req, res) => res.send('EmbeddingPlus API is running'));
 
-// ---------------------------------------------
-// Server Startup
-// ---------------------------------------------
+// ---------------------------------------------------------
+// Start Server
+// ---------------------------------------------------------
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
