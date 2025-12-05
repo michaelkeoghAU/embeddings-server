@@ -10,14 +10,34 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci || npm install
-      - run: npm run build --if-present
-      - uses: azure/webapps-deploy@v3
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build (if present)
+        run: npm run build --if-present
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4B833685307A47BFA04F9F9D3855DDCA }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C45A2451503E4056A0D89479CFD3D858 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_C1B4E2AACE544EA19A3316E0B51516F6 }}
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
           package: '.'
