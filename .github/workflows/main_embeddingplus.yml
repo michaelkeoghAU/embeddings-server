@@ -6,9 +6,14 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  id-token: write     # <-- required for OIDC
+  contents: read
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,9 +28,6 @@ jobs:
           pwd
           ls -la
           test -f package.json || (echo "package.json not found at repo root"; exit 1)
-          node -v
-          npm -v
-          cat package.json
 
       - name: Install dependencies
         run: npm install
@@ -44,3 +46,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
+          package: '.'
