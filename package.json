@@ -1,3 +1,4 @@
+
 {
   "name": "embeddingsserver",
   "version": "1.0.0",
@@ -20,3 +21,4 @@
     "openai": "^6.9.1",
     "pg": "^8.16.3"
   }
+}
