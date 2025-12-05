@@ -1,4 +1,7 @@
-// server.js
+// -------------------------------------------------------
+// server.js  (FINAL FIXED VERSION)
+// -------------------------------------------------------
+
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
@@ -7,88 +10,157 @@ const OpenAI = require('openai');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// -------------------------------------------------------
 // PostgreSQL
+// -------------------------------------------------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// OpenAI
+// -------------------------------------------------------
+// OpenAI Client (OpenAI or Azure OpenAI compatible)
+// -------------------------------------------------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL || undefined
 });
 
-// -------------------------
-// /embed
-// -------------------------
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
+
+// -------------------------------------------------------
+// Utility: Convert JS array → pgvector literal
+// -------------------------------------------------------
+function toPgVector(arr) {
+  if (!Array.isArray(arr)) throw new Error("Embedding is not an array!");
+  return `[${arr.join(",")}]`;  // required pgvector format
+}
+
+// -------------------------------------------------------
+// POST /embed
+// -------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary } = req.body;
 
-   console.log("MODEL IN USE before:", process.env.OPENAI_MODEL);
- 
-    const embed = await client.embeddings.create({
-      model: process.env.OPENAI_MODEL || 'text-embedding-3-small',
+    if (!summary || summary.length < 3) {
+      return res.status(400).json({ error: "summary must be provided" });
+    }
+
+    console.log("MODEL IN USE:", DEFAULT_MODEL);
+
+    // ----------- Create embedding -----------
+    const result = await client.embeddings.create({
+      model: DEFAULT_MODEL,
       input: summary
     });
 
-   console.log("MODEL IN USE after:", process.env.OPENAI_MODEL);
+    const embedding = result.data[0].embedding;
 
-    const embedding = embed.data[0].embedding;
+    if (!Array.isArray(embedding)) {
+      console.error("Embedding returned was NOT an array:", embedding);
+      return res.status(500).json({ error: "Invalid embedding format returned" });
+    }
 
+    console.log("Embedding length:", embedding.length);
+
+    // ----------- Format into pgvector syntax -----------
+    const pgVector = toPgVector(embedding);
+
+    // ----------- Insert into DB -----------
     const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
       VALUES ($1, $2, $3::vector)
       RETURNING id;
     `;
 
-    const result = await pool.query(sql, [
-      ticketNumber,
+    const resultInsert = await pool.query(sql, [
+      ticketNumber ?? null,
       summary,
-      embedding
+      pgVector
     ]);
 
-    res.json({ ok: true, id: result.rows[0].id });
+    res.json({
+      ok: true,
+      id: resultInsert.rows[0].id,
+      dims: embedding.length,
+      model: DEFAULT_MODEL
+    });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("ERROR in /embed:", err);
+    res.status(500).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 });
 
-// -------------------------
-// /match
-// -------------------------
+// -------------------------------------------------------
+// POST /match
+// -------------------------------------------------------
 app.post('/match', async (req, res) => {
   try {
     const { summary } = req.body;
 
-    const embed = await client.embeddings.create({
-      model: process.env.OPENAI_MODEL || 'text-embedding-3-small',
+    if (!summary) {
+      return res.status(400).json({ error: "summary text is required" });
+    }
+
+    // Embed the query text
+    const result = await client.embeddings.create({
+      model: DEFAULT_MODEL,
       input: summary
     });
 
-    const queryEmbedding = embed.data[0].embedding;
+    const queryEmbedding = result.data[0].embedding;
+    const pgVector = toPgVector(queryEmbedding);
 
-    const sql = `
-      SELECT ticket_number, summary, embedding <=> $1 AS distance
+    // Perform vector similarity search (<=> operator)
+    const searchSQL = `
+      SELECT 
+        ticket_number,
+        summary,
+        embedding <=> $1::vector AS distance
       FROM ticket_embeddings
-      ORDER BY embedding <=> $1
+      WHERE embedding IS NOT NULL
+      ORDER BY distance ASC
       LIMIT 5;
     `;
 
-    const result = await pool.query(sql, [queryEmbedding]);
+    const matches = await pool.query(searchSQL, [pgVector]);
 
-    res.json({ ok: true, matches: result.rows });
+    res.json({
+      ok: true,
+      count: matches.rows.length,
+      results: matches.rows
+    });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("ERROR in /match:", err);
+    res.status(500).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 });
 
-// -------------------------
-app.get('/health', (req, res) => res.send('OK'));
-app.get('/', (req, res) => res.send('EmbeddingPlus API is running'));
+// -------------------------------------------------------
+// Health Check
+// -------------------------------------------------------
+app.get('/health', (req, res) => {
+  res.status(200).send("OK");
+});
 
+// -------------------------------------------------------
+// Root
+// -------------------------------------------------------
+app.get('/', (req, res) => {
+  res.send("EmbeddingPlus API is running");
+});
+
+// -------------------------------------------------------
+// Start Server
+// -------------------------------------------------------
 const port = process.env.PORT || 8080;
 app.listen(port, () => console.log(`Server running on ${port}`));
