@@ -27,10 +27,14 @@ jobs:
       - name: Build app
         run: npm run build --if-present
 
-      - name: Prepare deployment package
-        run: |
-          mkdir -p deploy
-          cp -R . deploy/
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'EmbeddingPlus'  # exact Web App name
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
+          package: '.'               # deploy repo root
+
           echo "Contents of deploy folder:"
           ls -l deploy
 
@@ -71,5 +75,6 @@ jobs:
         with:
           app-name: 'EmbeddingPlus'
           package: deploy
+
 
 
