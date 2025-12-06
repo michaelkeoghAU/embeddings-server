@@ -6,7 +6,6 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const OpenAI = require('openai');
-const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
