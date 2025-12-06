@@ -160,12 +160,12 @@ app.post('/ingest-all-closed', async (req, res) => {
       // -----------------------------
       // FINAL CLEAN + CORRECT URL
       // -----------------------------
-      const url =
-        "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
-        `pageSize=1000&page=${page}&conditions=` +
-        `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
-        boards.map(b => `board/name="${b}"`).join(" OR ") +
-        ")`";
+    const url =
+      "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
+      `pageSize=1000&page=${page}&conditions=` +
+      `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
+      boards.map(b => `board/name="${b}"`).join(" OR ") +
+      ")";
 
       console.log(`➡ Fetching page ${page}`);
 
