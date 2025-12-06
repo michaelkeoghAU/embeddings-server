@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js  (FINAL VERSION WITH MIN SUMMARY=10 + LIMIT)
+// server.js  (FINAL VERSION — CLEAN + VALIDATED)
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -37,7 +37,7 @@ function toPgVector(arr) {
 }
 
 // -------------------------------------------------------
-// POST /embed   (UPSERT LOGIC + MIN LENGTH=10)
+// POST /embed — UPSERT + MIN LENGTH
 // -------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
@@ -45,7 +45,6 @@ app.post('/embed', async (req, res) => {
 
     const cleanSummary = (summary || "").trim();
 
-    // ---------- Minimum length rule ----------
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
         error: "summary must be at least 10 characters",
@@ -93,7 +92,7 @@ app.post('/embed', async (req, res) => {
 });
 
 // -------------------------------------------------------
-// POST /match
+// POST /match — top 5 nearest tickets
 // -------------------------------------------------------
 app.post('/match', async (req, res) => {
   try {
@@ -136,17 +135,12 @@ app.post('/match', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /match:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    res.status(500).json({ error: err.message, details: err.stack });
   }
 });
 
 // -------------------------------------------------------
-// POST /ingest-all-closed
-// One-off ingestion of ALL historical closed tickets
-// Supports: ?limit=10 (optional)
+// POST /ingest-all-closed — Historical ingestion
 // -------------------------------------------------------
 app.post('/ingest-all-closed', async (req, res) => {
   try {
@@ -162,12 +156,16 @@ app.post('/ingest-all-closed', async (req, res) => {
     console.log("🚀 Starting historical closed-ticket ingestion...");
 
     while (true) {
-    const url =
-      "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
-      `pageSize=1000&page=${page}&conditions=` +
-      `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
-      boards.map(b => `board/name="${b}"`).join(" OR ") +
-      ")`;
+
+      // -----------------------------
+      // FINAL CLEAN + CORRECT URL
+      // -----------------------------
+      const url =
+        "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
+        `pageSize=1000&page=${page}&conditions=` +
+        `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
+        boards.map(b => `board/name="${b}"`).join(" OR ") +
+        ")";
 
       console.log(`➡ Fetching page ${page}`);
 
@@ -197,16 +195,13 @@ app.post('/ingest-all-closed', async (req, res) => {
         break;
       }
 
-      // ---------- Process each ticket ----------
+      // ---------- Process tickets ----------
       for (const t of tickets) {
         const summary = (t.summary || "").trim();
 
-        // 1. Skip short summaries < 10 chars
         if (!summary || summary.length < 10) {
-          console.log(`⏭ Skipping short summary ticket ${t.id} (${summary})`);
           shortSummaries++;
         } else {
-          // 2. Check DB duplicate
           const exists = await pool.query(
             `SELECT 1 FROM ticket_embeddings WHERE ticket_number = $1 LIMIT 1`,
             [t.id]
@@ -215,7 +210,6 @@ app.post('/ingest-all-closed', async (req, res) => {
           if (exists.rowCount > 0) {
             skipped++;
           } else {
-            // 3. Embed
             const embedRes = await fetch("http://localhost:8080/embed", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -229,10 +223,8 @@ app.post('/ingest-all-closed', async (req, res) => {
           }
         }
 
-        // ---------- LIMIT ----------
         processed++;
         if (limit > 0 && processed >= limit) {
-          console.log(`🔹 Test limit of ${limit} reached — stopping early.`);
           return res.json({
             ok: true,
             inserted,
