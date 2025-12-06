@@ -165,7 +165,7 @@ app.post('/ingest-all-closed', async (req, res) => {
         `pageSize=1000&page=${page}&conditions=` +
         `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
         boards.map(b => `board/name="${b}"`).join(" OR ") +
-        ")";
+        ")`";
 
       console.log(`➡ Fetching page ${page}`);
 
