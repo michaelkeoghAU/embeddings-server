@@ -22,28 +22,28 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Validate repo
+      - name: Validate repo structure
         run: |
-          echo "📦 Repo contents:"
+          echo "📁 Listing repo..."
           ls -la
           test -f server.js || (echo "❌ server.js not found!" && exit 1)
           test -f package.json || (echo "❌ package.json not found!" && exit 1)
 
-      - name: Clean deployment folder
+      - name: Prepare clean deployment folder
         run: |
           rm -rf deploy
           mkdir deploy
-
-      - name: Copy app files
-        run: |
-          cp -R server.js package*.json .env deploy/
-          cp -R routes deploy/ 2>/dev/null || true
+          cp server.js deploy/
+          cp package.json deploy/
+          cp package-lock.json deploy/ 2>/dev/null || true
           cp -R lib deploy/ 2>/dev/null || true
+          cp -R routes deploy/ 2>/dev/null || true
+          cp .env deploy/ 2>/dev/null || true
 
-      - name: Remove node_modules (Azure will rebuild)
+      - name: Remove local node_modules
         run: rm -rf deploy/node_modules
 
-      - name: Azure Login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4B833685307A47BFA04F9F9D3855DDCA }}
