@@ -50,8 +50,9 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C45A2451503E4056A0D89479CFD3D858 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_C1B4E2AACE544EA19A3316E0B51516F6 }}
 
-      - name: Deploy to Azure Web App
+      - name: Deploy to Azure Web App – NO ORYX AUTOBUILD
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
           package: 'deploy'
+          enable-oryx-build: false
