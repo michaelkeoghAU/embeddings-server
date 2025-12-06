@@ -1,4 +1,3 @@
-
 name: Deploy Node app to Azure Web App (EmbeddingPlus)
 
 on:
@@ -7,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write     # <-- required for OIDC
+  id-token: write
   contents: read
 
 jobs:
@@ -23,17 +22,26 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Verify repo contents
+      - name: Validate repo
         run: |
-          pwd
+          echo "📦 Repo contents:"
           ls -la
-          test -f package.json || (echo "package.json not found at repo root"; exit 1)
+          test -f server.js || (echo "❌ server.js not found!" && exit 1)
+          test -f package.json || (echo "❌ package.json not found!" && exit 1)
 
-      - name: Install dependencies
-        run: npm install
+      - name: Clean deployment folder
+        run: |
+          rm -rf deploy
+          mkdir deploy
 
-      - name: Build (if present)
-        run: npm run build --if-present
+      - name: Copy app files
+        run: |
+          cp -R server.js package*.json .env deploy/
+          cp -R routes deploy/ 2>/dev/null || true
+          cp -R lib deploy/ 2>/dev/null || true
+
+      - name: Remove node_modules (Azure will rebuild)
+        run: rm -rf deploy/node_modules
 
       - name: Azure Login
         uses: azure/login@v2
@@ -46,4 +54,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'EmbeddingPlus'
-          package: '.'
+          package: 'deploy'
