@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js  (FINAL VERSION WITH LIMIT SUPPORT)
+// server.js  (FINAL VERSION WITH MIN SUMMARY=10 + LIMIT)
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -37,30 +37,30 @@ function toPgVector(arr) {
 }
 
 // -------------------------------------------------------
-// POST /embed   (UPSERT LOGIC)
+// POST /embed   (UPSERT LOGIC + MIN LENGTH=10)
 // -------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary } = req.body;
 
-    if (!summary || summary.length < 3) {
-      return res.status(400).json({ error: "summary must be provided" });
+    const cleanSummary = (summary || "").trim();
+
+    // ---------- Minimum length rule ----------
+    if (!cleanSummary || cleanSummary.length < 10) {
+      return res.status(400).json({
+        error: "summary must be at least 10 characters",
+        providedLength: cleanSummary.length
+      });
     }
 
-    console.log("MODEL IN USE:", DEFAULT_MODEL);
+    console.log("Embedding summary:", cleanSummary);
 
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
-      input: summary
+      input: cleanSummary
     });
 
     const embedding = result.data[0].embedding;
-
-    if (!Array.isArray(embedding)) {
-      console.error("Embedding returned was NOT an array:", embedding);
-      return res.status(500).json({ error: "Invalid embedding format returned" });
-    }
-
     const pgVector = toPgVector(embedding);
 
     const sql = `
@@ -76,15 +76,14 @@ app.post('/embed', async (req, res) => {
 
     const resultInsert = await pool.query(sql, [
       ticketNumber,
-      summary,
+      cleanSummary,
       pgVector
     ]);
 
     res.json({
       ok: true,
       id: resultInsert.rows[0].id,
-      dims: embedding.length,
-      model: DEFAULT_MODEL
+      dims: embedding.length
     });
 
   } catch (err) {
@@ -100,13 +99,17 @@ app.post('/match', async (req, res) => {
   try {
     const { summary } = req.body;
 
-    if (!summary) {
-      return res.status(400).json({ error: "summary text is required" });
+    const cleanSummary = (summary || "").trim();
+    if (!cleanSummary || cleanSummary.length < 10) {
+      return res.status(400).json({
+        error: "summary must be at least 10 characters",
+        providedLength: cleanSummary.length
+      });
     }
 
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
-      input: summary
+      input: cleanSummary
     });
 
     const queryEmbedding = result.data[0].embedding;
@@ -133,7 +136,10 @@ app.post('/match', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /match:", err);
-    res.status(500).json({ error: err.message, details: err.stack });
+    res.status(500).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 });
 
@@ -144,14 +150,13 @@ app.post('/match', async (req, res) => {
 // -------------------------------------------------------
 app.post('/ingest-all-closed', async (req, res) => {
   try {
-    // OPTIONAL LIMIT FOR TESTING
     const limit = parseInt(req.query.limit || "0", 10);
     let processed = 0;
-
-    let page = 1;
     let inserted = 0;
     let skipped = 0;
+    let shortSummaries = 0;
 
+    let page = 1;
     const boards = ["SMB1", "SMB2", "SMB4", "Escalations", "Pia"];
 
     console.log("🚀 Starting historical closed-ticket ingestion...");
@@ -176,38 +181,54 @@ app.post('/ingest-all-closed', async (req, res) => {
         }
       });
 
-      const tickets = await response.json();
+      const text = await response.text();
+      let tickets;
+
+      try {
+        tickets = JSON.parse(text);
+      } catch (err) {
+        console.error("CW returned NON-JSON:", text);
+        return res.status(500).json({ error: "CW returned invalid JSON", raw: text });
+      }
 
       if (!Array.isArray(tickets) || tickets.length === 0) {
         console.log("📭 No more tickets — complete.");
         break;
       }
 
+      // ---------- Process each ticket ----------
       for (const t of tickets) {
+        const summary = (t.summary || "").trim();
 
-        // ---------- Duplicate Check ----------
-        const exists = await pool.query(
-          `SELECT 1 FROM ticket_embeddings WHERE ticket_number = $1 LIMIT 1`,
-          [t.id]
-        );
-
-        if (exists.rowCount > 0) {
-          skipped++;
+        // 1. Skip short summaries < 10 chars
+        if (!summary || summary.length < 10) {
+          console.log(`⏭ Skipping short summary ticket ${t.id} (${summary})`);
+          shortSummaries++;
         } else {
-          // ---------- Internal call to /embed ----------
-          const embedRes = await fetch("http://localhost:8080/embed", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ticketNumber: t.id,
-              summary: t.summary || ""
-            })
-          });
+          // 2. Check DB duplicate
+          const exists = await pool.query(
+            `SELECT 1 FROM ticket_embeddings WHERE ticket_number = $1 LIMIT 1`,
+            [t.id]
+          );
 
-          if (embedRes.ok) inserted++;
+          if (exists.rowCount > 0) {
+            skipped++;
+          } else {
+            // 3. Embed
+            const embedRes = await fetch("http://localhost:8080/embed", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ticketNumber: t.id,
+                summary
+              })
+            });
+
+            if (embedRes.ok) inserted++;
+          }
         }
 
-        // ---------- LIMIT SUPPORT ----------
+        // ---------- LIMIT ----------
         processed++;
         if (limit > 0 && processed >= limit) {
           console.log(`🔹 Test limit of ${limit} reached — stopping early.`);
@@ -215,6 +236,7 @@ app.post('/ingest-all-closed', async (req, res) => {
             ok: true,
             inserted,
             skipped,
+            shortSummaries,
             note: `Stopped early after processing ${limit} tickets`
           });
         }
@@ -226,7 +248,8 @@ app.post('/ingest-all-closed', async (req, res) => {
     res.json({
       ok: true,
       inserted,
-      skipped
+      skipped,
+      shortSummaries
     });
 
   } catch (err) {
