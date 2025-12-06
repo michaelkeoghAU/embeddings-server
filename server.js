@@ -67,18 +67,24 @@ app.post('/embed', async (req, res) => {
     // ----------- Format into pgvector syntax -----------
     const pgVector = toPgVector(embedding);
 
-    // ----------- Insert into DB -----------
-    const sql = `
-      INSERT INTO ticket_embeddings (ticket_number, summary, embedding)
-      VALUES ($1, $2, $3::vector)
-      RETURNING id;
-    `;
+// ----------- Insert OR Update into DB -----------
+const sql = `
+  INSERT INTO ticket_embeddings (ticket_number, summary, embedding, created_at)
+  VALUES ($1, $2, $3::vector, NOW())
+  ON CONFLICT (ticket_number)
+  DO UPDATE SET
+      summary = EXCLUDED.summary,
+      embedding = EXCLUDED.embedding,
+      created_at = NOW()
+  RETURNING id;
+`;
 
-    const resultInsert = await pool.query(sql, [
-      ticketNumber ?? null,
-      summary,
-      pgVector
-    ]);
+const resultInsert = await pool.query(sql, [
+  ticketNumber,
+  summary,
+  pgVector
+]);
+
 
     res.json({
       ok: true,
