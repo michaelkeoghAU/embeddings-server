@@ -1,12 +1,12 @@
 // -------------------------------------------------------
-// server.js  (FINAL VERSION WITH BULK INGEST SUPPORT)
+// server.js  (FINAL VERSION WITH LIMIT SUPPORT)
 // -------------------------------------------------------
 
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const OpenAI = require('openai');
-const fetch = require('node-fetch');   // REQUIRED for CW + local API calls
+const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -38,7 +38,7 @@ function toPgVector(arr) {
 }
 
 // -------------------------------------------------------
-// POST /embed
+// POST /embed   (UPSERT LOGIC)
 // -------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
@@ -50,7 +50,6 @@ app.post('/embed', async (req, res) => {
 
     console.log("MODEL IN USE:", DEFAULT_MODEL);
 
-    // ----------- Create embedding -----------
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
       input: summary
@@ -63,12 +62,8 @@ app.post('/embed', async (req, res) => {
       return res.status(500).json({ error: "Invalid embedding format returned" });
     }
 
-    console.log("Embedding length:", embedding.length);
-
-    // ----------- Format into pgvector syntax -----------
     const pgVector = toPgVector(embedding);
 
-    // ----------- UPSERT -----------
     const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, embedding, created_at)
       VALUES ($1, $2, $3::vector, NOW())
@@ -95,10 +90,7 @@ app.post('/embed', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /embed:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    res.status(500).json({ error: err.message, details: err.stack });
   }
 });
 
@@ -113,7 +105,6 @@ app.post('/match', async (req, res) => {
       return res.status(400).json({ error: "summary text is required" });
     }
 
-    // Embed the query text
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
       input: summary
@@ -143,19 +134,21 @@ app.post('/match', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /match:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    res.status(500).json({ error: err.message, details: err.stack });
   }
 });
 
 // -------------------------------------------------------
-// NEW: POST /ingest-all-closed
+// POST /ingest-all-closed
 // One-off ingestion of ALL historical closed tickets
+// Supports: ?limit=10 (optional)
 // -------------------------------------------------------
 app.post('/ingest-all-closed', async (req, res) => {
   try {
+    // OPTIONAL LIMIT FOR TESTING
+    const limit = parseInt(req.query.limit || "0", 10);
+    let processed = 0;
+
     let page = 1;
     let inserted = 0;
     let skipped = 0;
@@ -187,13 +180,13 @@ app.post('/ingest-all-closed', async (req, res) => {
       const tickets = await response.json();
 
       if (!Array.isArray(tickets) || tickets.length === 0) {
-        console.log("📭 No more tickets returned — complete.");
+        console.log("📭 No more tickets — complete.");
         break;
       }
 
       for (const t of tickets) {
 
-        // ---------- Duplicate check BEFORE OpenAI ----------
+        // ---------- Duplicate Check ----------
         const exists = await pool.query(
           `SELECT 1 FROM ticket_embeddings WHERE ticket_number = $1 LIMIT 1`,
           [t.id]
@@ -201,21 +194,30 @@ app.post('/ingest-all-closed', async (req, res) => {
 
         if (exists.rowCount > 0) {
           skipped++;
-          continue;
+        } else {
+          // ---------- Internal call to /embed ----------
+          const embedRes = await fetch("http://localhost:8080/embed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ticketNumber: t.id,
+              summary: t.summary || ""
+            })
+          });
+
+          if (embedRes.ok) inserted++;
         }
 
-        // ---------- Send to /embed (internal API call) ----------
-        const embedRes = await fetch("http://localhost:8080/embed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ticketNumber: t.id,
-            summary: t.summary || ""
-          })
-        });
-
-        if (embedRes.ok) {
-          inserted++;
+        // ---------- LIMIT SUPPORT ----------
+        processed++;
+        if (limit > 0 && processed >= limit) {
+          console.log(`🔹 Test limit of ${limit} reached — stopping early.`);
+          return res.json({
+            ok: true,
+            inserted,
+            skipped,
+            note: `Stopped early after processing ${limit} tickets`
+          });
         }
       }
 
@@ -230,10 +232,7 @@ app.post('/ingest-all-closed', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /ingest-all-closed:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    res.status(500).json({ error: err.message, details: err.stack });
   }
 });
 
