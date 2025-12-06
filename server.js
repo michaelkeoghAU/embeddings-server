@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js  (FINAL FIXED VERSION)
+// server.js  (FINAL FIXED VERSION + UPSERT SUPPORT)
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -19,7 +19,7 @@ const pool = new Pool({
 });
 
 // -------------------------------------------------------
-// OpenAI Client (OpenAI or Azure OpenAI compatible)
+// OpenAI Client (supports OpenAI & Azure OpenAI)
 // -------------------------------------------------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -67,24 +67,27 @@ app.post('/embed', async (req, res) => {
     // ----------- Format into pgvector syntax -----------
     const pgVector = toPgVector(embedding);
 
-// ----------- Insert OR Update into DB -----------
-const sql = `
-  INSERT INTO ticket_embeddings (ticket_number, summary, embedding, created_at)
-  VALUES ($1, $2, $3::vector, NOW())
-  ON CONFLICT (ticket_number)
-  DO UPDATE SET
-      summary = EXCLUDED.summary,
-      embedding = EXCLUDED.embedding,
-      created_at = NOW()
-  RETURNING id;
-`;
+    // ----------- INSERT or UPDATE (UPSERT) -----------
+    //
+    // If ticket_number already exists → UPDATE existing row
+    // If not → INSERT new row
+    //
+    const sql = `
+      INSERT INTO ticket_embeddings (ticket_number, summary, embedding, created_at)
+      VALUES ($1, $2, $3::vector, NOW())
+      ON CONFLICT (ticket_number)
+      DO UPDATE SET
+          summary = EXCLUDED.summary,
+          embedding = EXCLUDED.embedding,
+          created_at = NOW()
+      RETURNING id;
+    `;
 
-const resultInsert = await pool.query(sql, [
-  ticketNumber,
-  summary,
-  pgVector
-]);
-
+    const resultInsert = await pool.query(sql, [
+      ticketNumber,
+      summary,
+      pgVector
+    ]);
 
     res.json({
       ok: true,
@@ -122,7 +125,7 @@ app.post('/match', async (req, res) => {
     const queryEmbedding = result.data[0].embedding;
     const pgVector = toPgVector(queryEmbedding);
 
-    // Perform vector similarity search (<=> operator)
+    // Vector similarity search
     const searchSQL = `
       SELECT 
         ticket_number,
