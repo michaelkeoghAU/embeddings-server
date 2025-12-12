@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js — FINAL VERSION WITH NOTES SUPPORT
+// server.js — FINAL VERSION WITH HARD CONTEXT SAFETY
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -29,24 +29,42 @@ const client = new OpenAI({
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 
 // -------------------------------------------------------
+// HARD SAFETY LIMITS
+// -------------------------------------------------------
+const MAX_CHARS_SUMMARY = 2000;
+const MAX_CHARS_NOTES   = 6000;
+
+// -------------------------------------------------------
+// Utility: Safe truncate
+// -------------------------------------------------------
+function safeTruncate(value, maxChars) {
+  if (!value || typeof value !== 'string') return '';
+  return value.length > maxChars
+    ? value.slice(0, maxChars)
+    : value;
+}
+
+// -------------------------------------------------------
 // Utility: Convert JS array → pgvector literal
 // -------------------------------------------------------
 function toPgVector(arr) {
-  if (!Array.isArray(arr)) throw new Error("Embedding is not an array!");
+  if (!Array.isArray(arr)) {
+    throw new Error("Embedding is not an array!");
+  }
   return `[${arr.join(",")}]`;
 }
 
 // ====================================================================
-// POST /embed — UPSERT summary + notes (combined embedding)
+// POST /embed — UPSERT summary + notes (SAFE combined embedding)
 // ====================================================================
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary, notes } = req.body;
 
     const cleanSummary = (summary || "").trim();
-    const cleanNotes = (notes || "").trim();
+    const cleanNotes   = (notes || "").trim();
 
-    // Require at least 10 chars of meaningful summary
+    // Require meaningful summary
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
         error: "summary must be at least 10 characters",
@@ -54,14 +72,21 @@ app.post('/embed', async (req, res) => {
       });
     }
 
-    // Combined embedding text
-    const combinedText = cleanSummary + "\n\nNotes:\n" + cleanNotes;
+    // HARD truncate to guarantee model safety
+    const safeSummary = safeTruncate(cleanSummary, MAX_CHARS_SUMMARY);
+    const safeNotes   = safeTruncate(cleanNotes, MAX_CHARS_NOTES);
 
+    const combinedText =
+      `Ticket ${ticketNumber}\n` +
+      `Summary:\n${safeSummary}\n\n` +
+      `Notes:\n${safeNotes}`;
+
+    console.log("--------------------------------------------------");
     console.log("Embedding ticket:", ticketNumber);
-    console.log("Summary length:", cleanSummary.length);
-    console.log("Notes length:", cleanNotes.length);
+    console.log("Summary chars:", cleanSummary.length, "→", safeSummary.length);
+    console.log("Notes chars:", cleanNotes.length, "→", safeNotes.length);
+    console.log("Combined chars:", combinedText.length);
 
-    // Generate embedding for combined text
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
       input: combinedText
@@ -70,47 +95,59 @@ app.post('/embed', async (req, res) => {
     const embedding = result.data[0].embedding;
     const pgVector = toPgVector(embedding);
 
-    // Store summary + notes separately, store embed for combined field
     const sql = `
-      INSERT INTO ticket_embeddings (ticket_number, summary, notes, embedding, created_at)
+      INSERT INTO ticket_embeddings (
+        ticket_number,
+        summary,
+        notes,
+        embedding,
+        created_at
+      )
       VALUES ($1, $2, $3, $4::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
-          summary   = EXCLUDED.summary,
-          notes     = EXCLUDED.notes,
-          embedding = EXCLUDED.embedding,
-          created_at = NOW()
+        summary    = EXCLUDED.summary,
+        notes      = EXCLUDED.notes,
+        embedding  = EXCLUDED.embedding,
+        created_at = NOW()
       RETURNING id;
     `;
 
     const resultInsert = await pool.query(sql, [
       ticketNumber,
-      cleanSummary,
-      cleanNotes,
+      safeSummary,
+      safeNotes,
       pgVector
     ]);
 
     res.json({
       ok: true,
       id: resultInsert.rows[0].id,
-      dims: embedding.length
+      dims: embedding.length,
+      truncated: {
+        summary: cleanSummary.length !== safeSummary.length,
+        notes: cleanNotes.length !== safeNotes.length
+      }
     });
 
   } catch (err) {
     console.error("ERROR in /embed:", err);
-    res.status(500).json({ error: err.message, details: err.stack });
+    res.status(500).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 });
 
 // ====================================================================
-// POST /match — nearest neighbours (uses summary+notes embedding)
+// POST /match — nearest neighbours (SAFE query embedding)
 // ====================================================================
 app.post('/match', async (req, res) => {
   try {
     const { summary, notes } = req.body;
 
     const cleanSummary = (summary || "").trim();
-    const cleanNotes = (notes || "").trim();
+    const cleanNotes   = (notes || "").trim();
 
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
@@ -119,7 +156,12 @@ app.post('/match', async (req, res) => {
       });
     }
 
-    const combinedText = cleanSummary + "\n\nNotes:\n" + cleanNotes;
+    const safeSummary = safeTruncate(cleanSummary, MAX_CHARS_SUMMARY);
+    const safeNotes   = safeTruncate(cleanNotes, MAX_CHARS_NOTES);
+
+    const combinedText =
+      `Summary:\n${safeSummary}\n\n` +
+      `Notes:\n${safeNotes}`;
 
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
@@ -151,7 +193,10 @@ app.post('/match', async (req, res) => {
 
   } catch (err) {
     console.error("ERROR in /match:", err);
-    res.status(500).json({ error: err.message, details: err.stack });
+    res.status(500).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 });
 
@@ -173,4 +218,6 @@ app.get('/', (req, res) => {
 // Start Server
 // ====================================================================
 const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`Server running on ${port}`));
+app.listen(port, () => {
+  console.log(`EmbeddingPlus API running on port ${port}`);
+});
