@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js — FINAL VERSION (supports NOTES + embeddings)
+// server.js — FINAL VERSION WITH NOTES SUPPORT
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -8,7 +8,7 @@ const { Pool } = require('pg');
 const OpenAI = require('openai');
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 // -------------------------------------------------------
 // PostgreSQL
@@ -29,16 +29,16 @@ const client = new OpenAI({
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 
 // -------------------------------------------------------
-// Utility: Convert JS embedding array → pgvector literal
+// Utility: Convert JS array → pgvector literal
 // -------------------------------------------------------
 function toPgVector(arr) {
-  if (!Array.isArray(arr)) throw new Error("Embedding is not an array");
+  if (!Array.isArray(arr)) throw new Error("Embedding is not an array!");
   return `[${arr.join(",")}]`;
 }
 
-// -------------------------------------------------------
-// POST /embed — UPSERT with summary + notes
-// -------------------------------------------------------
+// ====================================================================
+// POST /embed — UPSERT summary + notes (combined embedding)
+// ====================================================================
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, summary, notes } = req.body;
@@ -46,6 +46,7 @@ app.post('/embed', async (req, res) => {
     const cleanSummary = (summary || "").trim();
     const cleanNotes = (notes || "").trim();
 
+    // Require at least 10 chars of meaningful summary
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
         error: "summary must be at least 10 characters",
@@ -53,31 +54,30 @@ app.post('/embed', async (req, res) => {
       });
     }
 
-    // Combine text for embedding
-    const textForEmbedding =
-      cleanNotes.length > 0
-        ? `${cleanSummary}\n\nNOTES:\n${cleanNotes}`
-        : cleanSummary;
+    // Combined embedding text
+    const combinedText = cleanSummary + "\n\nNotes:\n" + cleanNotes;
 
-    console.log(`Embedding text length = ${textForEmbedding.length}`);
+    console.log("Embedding ticket:", ticketNumber);
+    console.log("Summary length:", cleanSummary.length);
+    console.log("Notes length:", cleanNotes.length);
 
-    // Generate embedding
+    // Generate embedding for combined text
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
-      input: textForEmbedding
+      input: combinedText
     });
 
     const embedding = result.data[0].embedding;
     const pgVector = toPgVector(embedding);
 
-    // Insert or update in DB
+    // Store summary + notes separately, store embed for combined field
     const sql = `
       INSERT INTO ticket_embeddings (ticket_number, summary, notes, embedding, created_at)
       VALUES ($1, $2, $3, $4::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
-          summary = EXCLUDED.summary,
-          notes = EXCLUDED.notes,
+          summary   = EXCLUDED.summary,
+          notes     = EXCLUDED.notes,
           embedding = EXCLUDED.embedding,
           created_at = NOW()
       RETURNING id;
@@ -93,8 +93,7 @@ app.post('/embed', async (req, res) => {
     res.json({
       ok: true,
       id: resultInsert.rows[0].id,
-      dims: embedding.length,
-      notesIncluded: cleanNotes.length > 0
+      dims: embedding.length
     });
 
   } catch (err) {
@@ -103,14 +102,16 @@ app.post('/embed', async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// POST /match — top 5 nearest embeddings
-// -------------------------------------------------------
+// ====================================================================
+// POST /match — nearest neighbours (uses summary+notes embedding)
+// ====================================================================
 app.post('/match', async (req, res) => {
   try {
-    const { summary } = req.body;
+    const { summary, notes } = req.body;
 
     const cleanSummary = (summary || "").trim();
+    const cleanNotes = (notes || "").trim();
+
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
         error: "summary must be at least 10 characters",
@@ -118,9 +119,11 @@ app.post('/match', async (req, res) => {
       });
     }
 
+    const combinedText = cleanSummary + "\n\nNotes:\n" + cleanNotes;
+
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
-      input: cleanSummary
+      input: combinedText
     });
 
     const queryEmbedding = result.data[0].embedding;
@@ -152,129 +155,22 @@ app.post('/match', async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// POST /ingest-all-closed — Historical ingestion from CW
-// -------------------------------------------------------
-app.post('/ingest-all-closed', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit || "0", 10);
-    let processed = 0;
-    let inserted = 0;
-    let skipped = 0;
-    let shortSummaries = 0;
-
-    let page = 1;
-    const boards = ["SMB1", "SMB2", "SMB4", "Escalations", "Pia"];
-
-    console.log("🚀 Starting historical closed-ticket ingestion...");
-
-    while (true) {
-      const url =
-        "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
-        `pageSize=1000&page=${page}&conditions=` +
-        `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
-        boards.map(b => `board/name="${b}"`).join(" OR ") +
-        ")";
-
-      console.log(`➡ Fetching page ${page}`);
-
-      const response = await fetch(url, {
-        headers: {
-          clientId: process.env.CW_CLIENT_ID,
-          Authorization:
-            "Basic " +
-            Buffer.from(
-              `${process.env.CW_PUBLIC_KEY}:${process.env.CW_PRIVATE_KEY}`
-            ).toString("base64")
-        }
-      });
-
-      const text = await response.text();
-      let tickets;
-
-      try {
-        tickets = JSON.parse(text);
-      } catch (err) {
-        console.error("CW returned NON-JSON:", text);
-        return res.status(500).json({ error: "CW returned invalid JSON", raw: text });
-      }
-
-      if (!Array.isArray(tickets) || tickets.length === 0) {
-        console.log("📭 No more tickets — complete.");
-        break;
-      }
-
-      for (const t of tickets) {
-        const summary = (t.summary || "").trim();
-
-        if (!summary || summary.length < 10) {
-          shortSummaries++;
-        } else {
-          const exists = await pool.query(
-            `SELECT 1 FROM ticket_embeddings WHERE ticket_number = $1 LIMIT 1`,
-            [t.id]
-          );
-
-          if (exists.rowCount > 0) {
-            skipped++;
-          } else {
-            const embedRes = await fetch("http://localhost:8080/embed", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                ticketNumber: t.id,
-                summary
-              })
-            });
-
-            if (embedRes.ok) inserted++;
-          }
-        }
-
-        processed++;
-        if (limit > 0 && processed >= limit) {
-          return res.json({
-            ok: true,
-            inserted,
-            skipped,
-            shortSummaries,
-            note: `Stopped early after processing ${limit} tickets`
-          });
-        }
-      }
-
-      page++;
-    }
-
-    res.json({
-      ok: true,
-      inserted,
-      skipped,
-      shortSummaries
-    });
-
-  } catch (err) {
-    console.error("ERROR in /ingest-all-closed:", err);
-    res.status(500).json({ error: err.message, details: err.stack });
-  }
-});
-
-// -------------------------------------------------------
+// ====================================================================
 // Health Check
-// -------------------------------------------------------
+// ====================================================================
 app.get('/health', (req, res) => {
   res.status(200).send("OK");
 });
 
-// -------------------------------------------------------
+// ====================================================================
 // Root
-// -------------------------------------------------------
+// ====================================================================
 app.get('/', (req, res) => {
   res.send("EmbeddingPlus API is running");
 });
 
-// -------------------------------------------------------
+// ====================================================================
 // Start Server
-// -------------------------------------------------------
+// ====================================================================
 const port = process.env.PORT || 8080;
 app.listen(port, () => console.log(`Server running on ${port}`));
