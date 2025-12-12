@@ -1,5 +1,5 @@
 // -------------------------------------------------------
-// server.js  (FINAL VERSION — CLEAN + VALIDATED)
+// server.js — FINAL VERSION (supports NOTES + embeddings)
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -29,21 +29,22 @@ const client = new OpenAI({
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 
 // -------------------------------------------------------
-// Utility: Convert JS array → pgvector literal
+// Utility: Convert JS embedding array → pgvector literal
 // -------------------------------------------------------
 function toPgVector(arr) {
-  if (!Array.isArray(arr)) throw new Error("Embedding is not an array!");
+  if (!Array.isArray(arr)) throw new Error("Embedding is not an array");
   return `[${arr.join(",")}]`;
 }
 
 // -------------------------------------------------------
-// POST /embed — UPSERT + MIN LENGTH
+// POST /embed — UPSERT with summary + notes
 // -------------------------------------------------------
 app.post('/embed', async (req, res) => {
   try {
-    const { ticketNumber, summary } = req.body;
+    const { ticketNumber, summary, notes } = req.body;
 
     const cleanSummary = (summary || "").trim();
+    const cleanNotes = (notes || "").trim();
 
     if (!cleanSummary || cleanSummary.length < 10) {
       return res.status(400).json({
@@ -52,22 +53,31 @@ app.post('/embed', async (req, res) => {
       });
     }
 
-    console.log("Embedding summary:", cleanSummary);
+    // Combine text for embedding
+    const textForEmbedding =
+      cleanNotes.length > 0
+        ? `${cleanSummary}\n\nNOTES:\n${cleanNotes}`
+        : cleanSummary;
 
+    console.log(`Embedding text length = ${textForEmbedding.length}`);
+
+    // Generate embedding
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
-      input: cleanSummary
+      input: textForEmbedding
     });
 
     const embedding = result.data[0].embedding;
     const pgVector = toPgVector(embedding);
 
+    // Insert or update in DB
     const sql = `
-      INSERT INTO ticket_embeddings (ticket_number, summary, embedding, created_at)
-      VALUES ($1, $2, $3::vector, NOW())
+      INSERT INTO ticket_embeddings (ticket_number, summary, notes, embedding, created_at)
+      VALUES ($1, $2, $3, $4::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
           summary = EXCLUDED.summary,
+          notes = EXCLUDED.notes,
           embedding = EXCLUDED.embedding,
           created_at = NOW()
       RETURNING id;
@@ -76,13 +86,15 @@ app.post('/embed', async (req, res) => {
     const resultInsert = await pool.query(sql, [
       ticketNumber,
       cleanSummary,
+      cleanNotes,
       pgVector
     ]);
 
     res.json({
       ok: true,
       id: resultInsert.rows[0].id,
-      dims: embedding.length
+      dims: embedding.length,
+      notesIncluded: cleanNotes.length > 0
     });
 
   } catch (err) {
@@ -92,7 +104,7 @@ app.post('/embed', async (req, res) => {
 });
 
 // -------------------------------------------------------
-// POST /match — top 5 nearest tickets
+// POST /match — top 5 nearest embeddings
 // -------------------------------------------------------
 app.post('/match', async (req, res) => {
   try {
@@ -118,6 +130,7 @@ app.post('/match', async (req, res) => {
       SELECT 
         ticket_number,
         summary,
+        notes,
         embedding <=> $1::vector AS distance
       FROM ticket_embeddings
       WHERE embedding IS NOT NULL
@@ -140,7 +153,7 @@ app.post('/match', async (req, res) => {
 });
 
 // -------------------------------------------------------
-// POST /ingest-all-closed — Historical ingestion
+// POST /ingest-all-closed — Historical ingestion from CW
 // -------------------------------------------------------
 app.post('/ingest-all-closed', async (req, res) => {
   try {
@@ -156,16 +169,12 @@ app.post('/ingest-all-closed', async (req, res) => {
     console.log("🚀 Starting historical closed-ticket ingestion...");
 
     while (true) {
-
-      // -----------------------------
-      // FINAL CLEAN + CORRECT URL
-      // -----------------------------
-    const url =
-      "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
-      `pageSize=1000&page=${page}&conditions=` +
-      `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
-      boards.map(b => `board/name="${b}"`).join(" OR ") +
-      ")";
+      const url =
+        "https://api-aus.myconnectwise.net/v4_6_release/apis/3.0/service/tickets?" +
+        `pageSize=1000&page=${page}&conditions=` +
+        `closedFlag=true AND status/name!="Closed (Cancelled)" AND (` +
+        boards.map(b => `board/name="${b}"`).join(" OR ") +
+        ")";
 
       console.log(`➡ Fetching page ${page}`);
 
@@ -195,7 +204,6 @@ app.post('/ingest-all-closed', async (req, res) => {
         break;
       }
 
-      // ---------- Process tickets ----------
       for (const t of tickets) {
         const summary = (t.summary || "").trim();
 
