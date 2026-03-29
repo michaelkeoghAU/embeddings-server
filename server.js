@@ -1,5 +1,6 @@
+
 // -------------------------------------------------------
-// server.js — FINAL VERSION WITH HARD CONTEXT SAFETY
+// server.js — FINAL SIMPLIFIED VERSION (SUMMARY + ISSUE)
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -29,7 +30,7 @@ const client = new OpenAI({
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 
 // -------------------------------------------------------
-// HARD SAFETY LIMITS
+// HARD SAFETY LIMITS (no semantic validation)
 // -------------------------------------------------------
 const MAX_CHARS_SUMMARY = 2000;
 const MAX_CHARS_NOTES   = 6000;
@@ -39,9 +40,7 @@ const MAX_CHARS_NOTES   = 6000;
 // -------------------------------------------------------
 function safeTruncate(value, maxChars) {
   if (!value || typeof value !== 'string') return '';
-  return value.length > maxChars
-    ? value.slice(0, maxChars)
-    : value;
+  return value.length > maxChars ? value.slice(0, maxChars) : value;
 }
 
 // -------------------------------------------------------
@@ -55,7 +54,7 @@ function toPgVector(arr) {
 }
 
 // ====================================================================
-// POST /embed — UPSERT summary + notes (SAFE combined embedding)
+// POST /embed — embed summary + issue text
 // ====================================================================
 app.post('/embed', async (req, res) => {
   try {
@@ -64,28 +63,20 @@ app.post('/embed', async (req, res) => {
     const cleanSummary = (summary || "").trim();
     const cleanNotes   = (notes || "").trim();
 
-    // Require meaningful summary
-    if (!cleanSummary || cleanSummary.length < 10) {
+    // Require SOME meaningful content
+    if (!cleanSummary && !cleanNotes) {
       return res.status(400).json({
-        error: "summary must be at least 10 characters",
-        providedLength: cleanSummary.length
+        error: "summary or notes must be provided"
       });
     }
 
-    // HARD truncate to guarantee model safety
     const safeSummary = safeTruncate(cleanSummary, MAX_CHARS_SUMMARY);
     const safeNotes   = safeTruncate(cleanNotes, MAX_CHARS_NOTES);
 
     const combinedText =
       `Ticket ${ticketNumber}\n` +
       `Summary:\n${safeSummary}\n\n` +
-      `Notes:\n${safeNotes}`;
-
-    console.log("--------------------------------------------------");
-    console.log("Embedding ticket:", ticketNumber);
-    console.log("Summary chars:", cleanSummary.length, "→", safeSummary.length);
-    console.log("Notes chars:", cleanNotes.length, "→", safeNotes.length);
-    console.log("Combined chars:", combinedText.length);
+      `Issue:\n${safeNotes}`;
 
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
@@ -123,11 +114,7 @@ app.post('/embed', async (req, res) => {
     res.json({
       ok: true,
       id: resultInsert.rows[0].id,
-      dims: embedding.length,
-      truncated: {
-        summary: cleanSummary.length !== safeSummary.length,
-        notes: cleanNotes.length !== safeNotes.length
-      }
+      dims: embedding.length
     });
 
   } catch (err) {
@@ -140,7 +127,7 @@ app.post('/embed', async (req, res) => {
 });
 
 // ====================================================================
-// POST /match — nearest neighbours (SAFE query embedding)
+// POST /match — nearest neighbours (same logic)
 // ====================================================================
 app.post('/match', async (req, res) => {
   try {
@@ -149,10 +136,9 @@ app.post('/match', async (req, res) => {
     const cleanSummary = (summary || "").trim();
     const cleanNotes   = (notes || "").trim();
 
-    if (!cleanSummary || cleanSummary.length < 10) {
+    if (!cleanSummary && !cleanNotes) {
       return res.status(400).json({
-        error: "summary must be at least 10 characters",
-        providedLength: cleanSummary.length
+        error: "summary or notes must be provided"
       });
     }
 
@@ -161,7 +147,7 @@ app.post('/match', async (req, res) => {
 
     const combinedText =
       `Summary:\n${safeSummary}\n\n` +
-      `Notes:\n${safeNotes}`;
+      `Issue:\n${safeNotes}`;
 
     const result = await client.embeddings.create({
       model: DEFAULT_MODEL,
