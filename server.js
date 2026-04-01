@@ -1,8 +1,3 @@
-// -------------------------------------------------------
-// server.js — PRODUCTION (Power Automate compatible)
-// Contract: { ticketNumber, text }
-// -------------------------------------------------------
-
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
@@ -33,6 +28,7 @@ const MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 // Limits
 // -------------------------------------------------------
 const MAX_CHARS_TEXT = 8000;
+const MAX_CHARS_SUMMARY = 255;
 
 // -------------------------------------------------------
 // Helpers
@@ -44,29 +40,42 @@ function safeTruncate(value, maxChars) {
 
 function toPgVector(arr) {
   if (!Array.isArray(arr)) {
-    throw new Error("Embedding is not an array");
+    throw new Error('Embedding is not an array');
   }
-  return `[${arr.join(",")}]`;
+  return `[${arr.join(',')}]`;
 }
 
 // ====================================================================
-// POST /embed — embeds EXACT text sent by Power Automate
+// POST /embed
+// Contract from Power Automate:
+// {
+//   ticketNumber: "...",
+//   text: "summary + issue text (EmbedText)"
+// }
 // ====================================================================
 app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, text } = req.body;
 
     if (!ticketNumber) {
-      return res.status(400).json({ error: "ticketNumber is required" });
+      return res.status(400).json({ error: 'ticketNumber is required' });
     }
 
-    const cleanText = (text || "").trim();
-    if (!cleanText) {
-      return res.status(400).json({ error: "text is required" });
+    const embedText = (text || '').trim();
+    if (!embedText) {
+      return res.status(400).json({ error: 'text is required' });
     }
 
-    const safeText = safeTruncate(cleanText, MAX_CHARS_TEXT);
+    const safeText = safeTruncate(embedText, MAX_CHARS_TEXT);
 
+    // ✅ Populate summary ONLY to satisfy NOT NULL
+    // Use first line / first chunk of EmbedText
+    const summary = safeTruncate(
+      safeText.split('\n')[0],
+      MAX_CHARS_SUMMARY
+    );
+
+    // Create embedding from FULL EmbedText
     const embedResult = await openai.embeddings.create({
       model: MODEL,
       input: safeText
@@ -78,13 +87,15 @@ app.post('/embed', async (req, res) => {
     const sql = `
       INSERT INTO ticket_embeddings (
         ticket_number,
+        summary,
         notes,
         embedding,
         created_at
       )
-      VALUES ($1, $2, $3::vector, NOW())
+      VALUES ($1, $2, $3, $4::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
+        summary    = EXCLUDED.summary,
         notes      = EXCLUDED.notes,
         embedding  = EXCLUDED.embedding,
         created_at = NOW()
@@ -93,11 +104,12 @@ app.post('/embed', async (req, res) => {
 
     const result = await pool.query(sql, [
       ticketNumber,
+      summary,
       safeText,
       pgVector
     ]);
 
-    res.json({
+    return res.status(200).json({
       ok: true,
       ticketNumber,
       id: result.rows[0].id,
@@ -105,54 +117,10 @@ app.post('/embed', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("ERROR /embed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ====================================================================
-// POST /match — similarity search using same text contract
-// ====================================================================
-app.post('/match', async (req, res) => {
-  try {
-    const { text } = req.body;
-
-    const cleanText = (text || "").trim();
-    if (!cleanText) {
-      return res.status(400).json({ error: "text is required" });
-    }
-
-    const safeText = safeTruncate(cleanText, MAX_CHARS_TEXT);
-
-    const embedResult = await openai.embeddings.create({
-      model: MODEL,
-      input: safeText
+    console.error('ERROR /embed:', err);
+    return res.status(500).json({
+      error: err.message
     });
-
-    const embedding = embedResult.data[0].embedding;
-    const pgVector = toPgVector(embedding);
-
-    const sql = `
-      SELECT
-        ticket_number,
-        notes,
-        embedding <=> $1::vector AS distance
-      FROM ticket_embeddings
-      ORDER BY distance ASC
-      LIMIT 5;
-    `;
-
-    const matches = await pool.query(sql, [pgVector]);
-
-    res.json({
-      ok: true,
-      count: matches.rows.length,
-      results: matches.rows
-    });
-
-  } catch (err) {
-    console.error("ERROR /match:", err);
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -160,12 +128,12 @@ app.post('/match', async (req, res) => {
 // Health
 // ====================================================================
 app.get('/health', (req, res) => {
-  res.status(200).send("OK");
+  res.status(200).send('OK');
 });
 
 // Root
 app.get('/', (req, res) => {
-  res.send("EmbeddingPlus API running");
+  res.send('EmbeddingPlus API running');
 });
 
 // ====================================================================
