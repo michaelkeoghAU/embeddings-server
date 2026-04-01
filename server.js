@@ -1,6 +1,6 @@
-
 // -------------------------------------------------------
-// server.js — FINAL SIMPLIFIED VERSION (SUMMARY + ISSUE)
+// server.js — PRODUCTION (Power Automate compatible)
+// Contract: { ticketNumber, text }
 // -------------------------------------------------------
 
 require('dotenv').config();
@@ -20,156 +20,129 @@ const pool = new Pool({
 });
 
 // -------------------------------------------------------
-// OpenAI Client
+// OpenAI
 // -------------------------------------------------------
-const client = new OpenAI({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL || undefined
 });
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
+const MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 
 // -------------------------------------------------------
-// HARD SAFETY LIMITS (no semantic validation)
+// Limits
 // -------------------------------------------------------
-const MAX_CHARS_SUMMARY = 2000;
-const MAX_CHARS_NOTES   = 6000;
+const MAX_CHARS_TEXT = 8000;
 
 // -------------------------------------------------------
-// Utility: Safe truncate
+// Helpers
 // -------------------------------------------------------
 function safeTruncate(value, maxChars) {
   if (!value || typeof value !== 'string') return '';
   return value.length > maxChars ? value.slice(0, maxChars) : value;
 }
 
-// -------------------------------------------------------
-// Utility: Convert JS array → pgvector literal
-// -------------------------------------------------------
 function toPgVector(arr) {
   if (!Array.isArray(arr)) {
-    throw new Error("Embedding is not an array!");
+    throw new Error("Embedding is not an array");
   }
   return `[${arr.join(",")}]`;
 }
 
 // ====================================================================
-// POST /embed — embed summary + issue text
+// POST /embed — embeds EXACT text sent by Power Automate
 // ====================================================================
 app.post('/embed', async (req, res) => {
   try {
-    const { ticketNumber, summary, notes } = req.body;
+    const { ticketNumber, text } = req.body;
 
-    const cleanSummary = (summary || "").trim();
-    const cleanNotes   = (notes || "").trim();
-
-    // Require SOME meaningful content
-    if (!cleanSummary && !cleanNotes) {
-      return res.status(400).json({
-        error: "summary or notes must be provided"
-      });
+    if (!ticketNumber) {
+      return res.status(400).json({ error: "ticketNumber is required" });
     }
 
-    const safeSummary = safeTruncate(cleanSummary, MAX_CHARS_SUMMARY);
-    const safeNotes   = safeTruncate(cleanNotes, MAX_CHARS_NOTES);
+    const cleanText = (text || "").trim();
+    if (!cleanText) {
+      return res.status(400).json({ error: "text is required" });
+    }
 
-    const combinedText =
-      `Ticket ${ticketNumber}\n` +
-      `Summary:\n${safeSummary}\n\n` +
-      `Issue:\n${safeNotes}`;
+    const safeText = safeTruncate(cleanText, MAX_CHARS_TEXT);
 
-    const result = await client.embeddings.create({
-      model: DEFAULT_MODEL,
-      input: combinedText
+    const embedResult = await openai.embeddings.create({
+      model: MODEL,
+      input: safeText
     });
 
-    const embedding = result.data[0].embedding;
+    const embedding = embedResult.data[0].embedding;
     const pgVector = toPgVector(embedding);
 
     const sql = `
       INSERT INTO ticket_embeddings (
         ticket_number,
-        summary,
         notes,
         embedding,
         created_at
       )
-      VALUES ($1, $2, $3, $4::vector, NOW())
+      VALUES ($1, $2, $3::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
-        summary    = EXCLUDED.summary,
         notes      = EXCLUDED.notes,
         embedding  = EXCLUDED.embedding,
         created_at = NOW()
       RETURNING id;
     `;
 
-    const resultInsert = await pool.query(sql, [
+    const result = await pool.query(sql, [
       ticketNumber,
-      safeSummary,
-      safeNotes,
+      safeText,
       pgVector
     ]);
 
     res.json({
       ok: true,
-      id: resultInsert.rows[0].id,
+      ticketNumber,
+      id: result.rows[0].id,
       dims: embedding.length
     });
 
   } catch (err) {
-    console.error("ERROR in /embed:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    console.error("ERROR /embed:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // ====================================================================
-// POST /match — nearest neighbours (same logic)
+// POST /match — similarity search using same text contract
 // ====================================================================
 app.post('/match', async (req, res) => {
   try {
-    const { summary, notes } = req.body;
+    const { text } = req.body;
 
-    const cleanSummary = (summary || "").trim();
-    const cleanNotes   = (notes || "").trim();
-
-    if (!cleanSummary && !cleanNotes) {
-      return res.status(400).json({
-        error: "summary or notes must be provided"
-      });
+    const cleanText = (text || "").trim();
+    if (!cleanText) {
+      return res.status(400).json({ error: "text is required" });
     }
 
-    const safeSummary = safeTruncate(cleanSummary, MAX_CHARS_SUMMARY);
-    const safeNotes   = safeTruncate(cleanNotes, MAX_CHARS_NOTES);
+    const safeText = safeTruncate(cleanText, MAX_CHARS_TEXT);
 
-    const combinedText =
-      `Summary:\n${safeSummary}\n\n` +
-      `Issue:\n${safeNotes}`;
-
-    const result = await client.embeddings.create({
-      model: DEFAULT_MODEL,
-      input: combinedText
+    const embedResult = await openai.embeddings.create({
+      model: MODEL,
+      input: safeText
     });
 
-    const queryEmbedding = result.data[0].embedding;
-    const pgVector = toPgVector(queryEmbedding);
+    const embedding = embedResult.data[0].embedding;
+    const pgVector = toPgVector(embedding);
 
-    const searchSQL = `
-      SELECT 
+    const sql = `
+      SELECT
         ticket_number,
-        summary,
         notes,
         embedding <=> $1::vector AS distance
       FROM ticket_embeddings
-      WHERE embedding IS NOT NULL
       ORDER BY distance ASC
       LIMIT 5;
     `;
 
-    const matches = await pool.query(searchSQL, [pgVector]);
+    const matches = await pool.query(sql, [pgVector]);
 
     res.json({
       ok: true,
@@ -178,30 +151,25 @@ app.post('/match', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("ERROR in /match:", err);
-    res.status(500).json({
-      error: err.message,
-      details: err.stack
-    });
+    console.error("ERROR /match:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // ====================================================================
-// Health Check
+// Health
 // ====================================================================
 app.get('/health', (req, res) => {
   res.status(200).send("OK");
 });
 
-// ====================================================================
 // Root
-// ====================================================================
 app.get('/', (req, res) => {
-  res.send("EmbeddingPlus API is running");
+  res.send("EmbeddingPlus API running");
 });
 
 // ====================================================================
-// Start Server
+// Start server (Azure-safe)
 // ====================================================================
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
