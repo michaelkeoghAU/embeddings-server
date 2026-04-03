@@ -47,11 +47,6 @@ function toPgVector(arr) {
 
 // ====================================================================
 // POST /embed
-// Contract from Power Automate:
-// {
-//   ticketNumber: "...",
-//   text: "summary + issue text (EmbedText)"
-// }
 // ====================================================================
 app.post('/embed', async (req, res) => {
   try {
@@ -68,14 +63,11 @@ app.post('/embed', async (req, res) => {
 
     const safeText = safeTruncate(embedText, MAX_CHARS_TEXT);
 
-    // ✅ Populate summary ONLY to satisfy NOT NULL
-    // Use first line / first chunk of EmbedText
     const summary = safeTruncate(
       safeText.split('\n')[0],
       MAX_CHARS_SUMMARY
     );
 
-    // Create embedding from FULL EmbedText
     const embedResult = await openai.embeddings.create({
       model: MODEL,
       input: safeText
@@ -118,9 +110,58 @@ app.post('/embed', async (req, res) => {
 
   } catch (err) {
     console.error('ERROR /embed:', err);
-    return res.status(500).json({
-      error: err.message
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================================
+// POST /match
+// Contract:
+// {
+//   text: "summary + issue text",
+//   limit: 5
+// }
+// ====================================================================
+app.post('/match', async (req, res) => {
+  try {
+    const { text, limit } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'text is required' });
+    }
+
+    const topK = Math.min(Number(limit) || 5, 20);
+    const safeText = safeTruncate(text.trim(), MAX_CHARS_TEXT);
+
+    const embedResult = await openai.embeddings.create({
+      model: MODEL,
+      input: safeText
     });
+
+    const queryEmbedding = embedResult.data[0].embedding;
+    const pgVector = toPgVector(queryEmbedding);
+
+    const sql = `
+      SELECT
+        ticket_number,
+        summary,
+        1 - (embedding <-> $1::vector) AS similarity
+      FROM ticket_embeddings
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <-> $1::vector
+      LIMIT $2;
+    `;
+
+    const result = await pool.query(sql, [pgVector, topK]);
+
+    return res.status(200).json({
+      ok: true,
+      matches: result.rows
+    });
+
+  } catch (err) {
+    console.error('ERROR /match:', err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
