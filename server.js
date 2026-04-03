@@ -6,6 +6,15 @@ const OpenAI = require('openai');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// --- API key middleware ---
+function requireApiKey(req, res, next) {
+  const key = req.header('x-api-key');
+  if (!key || key !== process.env.API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
 // -------------------------------------------------------
 // PostgreSQL
 // -------------------------------------------------------
@@ -48,7 +57,7 @@ function toPgVector(arr) {
 // ====================================================================
 // POST /embed
 // ====================================================================
-app.post('/embed', async (req, res) => {
+app.post('/embed', requireApiKey, async (req, res) => {
   try {
     const { ticketNumber, text } = req.body;
 
@@ -62,7 +71,6 @@ app.post('/embed', async (req, res) => {
     }
 
     const safeText = safeTruncate(embedText, MAX_CHARS_TEXT);
-
     const summary = safeTruncate(
       safeText.split('\n')[0],
       MAX_CHARS_SUMMARY
@@ -116,13 +124,8 @@ app.post('/embed', async (req, res) => {
 
 // ====================================================================
 // POST /match
-// Contract:
-// {
-//   text: "summary + issue text",
-//   limit: 5
-// }
 // ====================================================================
-app.post('/match', async (req, res) => {
+app.post('/match', requireApiKey, async (req, res) => {
   try {
     const { text, limit } = req.body;
 
