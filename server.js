@@ -6,21 +6,6 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 // -------------------------------------------------------
-// OPTIONAL: Easy Auth guard (recommended but not required)
-// -------------------------------------------------------
-function requireEasyAuth(req, res, next) {
-  // Easy Auth injects this header when auth succeeds
-  // https://learn.microsoft.com/azure/app-service/configure-authentication-user-identities
-  const principal = req.header('x-ms-client-principal');
-
-  if (!principal) {
-    return res.status(401).json({ error: 'Unauthorized (Easy Auth)' });
-  }
-
-  next();
-}
-
-// -------------------------------------------------------
 // PostgreSQL
 // -------------------------------------------------------
 const pool = new Pool({
@@ -62,7 +47,7 @@ function toPgVector(arr) {
 // ====================================================================
 // POST /embed
 // ====================================================================
-app.post('/embed', requireEasyAuth, async (req, res) => {
+app.post('/embed', async (req, res) => {
   try {
     const { ticketNumber, text } = req.body;
 
@@ -130,7 +115,7 @@ app.post('/embed', requireEasyAuth, async (req, res) => {
 // ====================================================================
 // POST /match
 // ====================================================================
-app.post('/match', requireEasyAuth, async (req, res) => {
+app.post('/match', async (req, res) => {
   try {
     const { text, limit } = req.body;
 
