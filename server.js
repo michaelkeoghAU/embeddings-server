@@ -8,10 +8,13 @@ app.use(express.json({ limit: '10mb' }));
 
 // --- API key middleware ---
 function requireApiKey(req, res, next) {
-  const key = req.header('x-api-key');
-  if (!key || key !== process.env.API_KEY) {
+  const headerKey = (req.header('x-api-key') || '').trim();
+  const envKey = (process.env.API_KEY || '').trim();
+
+  if (!headerKey || headerKey !== envKey) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+
   next();
 }
 
