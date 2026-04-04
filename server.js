@@ -149,6 +149,20 @@ app.post('/match', requireApiKey, async (req, res) => {
       model: MODEL,
       input: safeText
     });
+    // ====================================================================
+// DEBUG: API key visibility (TEMPORARY)
+// ====================================================================
+app.get('/__debug/apikey', (req, res) => {
+  const headerKey = (req.header('x-api-key') || '').trim();
+  const envKey = (process.env.API_KEY || '').trim();
+
+  res.json({
+    headerSeen: headerKey || null,
+    envSeen: envKey || null,
+    equal: headerKey === envKey
+  });
+});
+
 
     const queryEmbedding = embedResult.data[0].embedding;
     const pgVector = toPgVector(queryEmbedding);
