@@ -149,20 +149,6 @@ app.post('/match', requireApiKey, async (req, res) => {
       model: MODEL,
       input: safeText
     });
-    // ====================================================================
-// DEBUG: API key visibility (TEMPORARY)
-// ====================================================================
-app.get('/__debug/apikey', (req, res) => {
-  const headerKey = (req.header('x-api-key') || '').trim();
-  const envKey = (process.env.API_KEY || '').trim();
-
-  res.json({
-    headerSeen: headerKey || null,
-    envSeen: envKey || null,
-    equal: headerKey === envKey
-  });
-});
-
 
     const queryEmbedding = embedResult.data[0].embedding;
     const pgVector = toPgVector(queryEmbedding);
@@ -189,6 +175,21 @@ app.get('/__debug/apikey', (req, res) => {
     console.error('ERROR /match:', err);
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ====================================================================
+// DEBUG: API key visibility (TEMPORARY)
+// REMOVE AFTER TESTING
+// ====================================================================
+app.get('/__debug/apikey', (req, res) => {
+  const headerKey = (req.header('x-api-key') || '').trim();
+  const envKey = (process.env.API_KEY || '').trim();
+
+  res.json({
+    headerSeen: headerKey || null,
+    envSeen: envKey || null,
+    equal: headerKey === envKey
+  });
 });
 
 // ====================================================================
