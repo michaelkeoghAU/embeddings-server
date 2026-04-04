@@ -6,7 +6,9 @@ const OpenAI = require('openai');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// --- API key middleware ---
+// -------------------------------------------------------
+// API key middleware
+// -------------------------------------------------------
 function requireApiKey(req, res, next) {
   const headerKey = (req.header('x-api-key') || '').trim();
   const envKey = (process.env.API_KEY || '').trim();
@@ -138,6 +140,10 @@ app.post('/match', requireApiKey, async (req, res) => {
 
     const topK = Math.min(Number(limit) || 5, 20);
     const safeText = safeTruncate(text.trim(), MAX_CHARS_TEXT);
+
+    if (!safeText) {
+      return res.status(400).json({ error: 'text is empty after truncation' });
+    }
 
     const embedResult = await openai.embeddings.create({
       model: MODEL,
