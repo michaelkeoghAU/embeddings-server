@@ -6,18 +6,15 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 // -------------------------------------------------------
-// API key middleware
+// OPTIONAL: Easy Auth guard (recommended but not required)
 // -------------------------------------------------------
-function requireApiKey(req, res, next) {
-  const headerKey = (req.header('x-api-key') || '').trim();
+function requireEasyAuth(req, res, next) {
+  // Easy Auth injects this header when auth succeeds
+  // https://learn.microsoft.com/azure/app-service/configure-authentication-user-identities
+  const principal = req.header('x-ms-client-principal');
 
-  const envKey =
-    (process.env.API_KEY ||
-     process.env.APPSETTING_API_KEY ||
-     '').trim();
-
-  if (!headerKey || !envKey || headerKey !== envKey) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (!principal) {
+    return res.status(401).json({ error: 'Unauthorized (Easy Auth)' });
   }
 
   next();
@@ -65,7 +62,7 @@ function toPgVector(arr) {
 // ====================================================================
 // POST /embed
 // ====================================================================
-app.post('/embed', requireApiKey, async (req, res) => {
+app.post('/embed', requireEasyAuth, async (req, res) => {
   try {
     const { ticketNumber, text } = req.body;
 
@@ -133,7 +130,7 @@ app.post('/embed', requireApiKey, async (req, res) => {
 // ====================================================================
 // POST /match
 // ====================================================================
-app.post('/match', requireApiKey, async (req, res) => {
+app.post('/match', requireEasyAuth, async (req, res) => {
   try {
     const { text, limit } = req.body;
 
@@ -178,21 +175,6 @@ app.post('/match', requireApiKey, async (req, res) => {
     console.error('ERROR /match:', err);
     return res.status(500).json({ error: err.message });
   }
-});
-
-// ====================================================================
-// DEBUG: API key visibility (TEMPORARY)
-// REMOVE AFTER TESTING
-// ====================================================================
-app.get('/__debug/apikey', (req, res) => {
-  const headerKey = (req.header('x-api-key') || '').trim();
-  const envKey = (process.env.API_KEY || '').trim();
-
-  res.json({
-    headerSeen: headerKey || null,
-    envSeen: envKey || null,
-    equal: headerKey === envKey
-  });
 });
 
 // ====================================================================
