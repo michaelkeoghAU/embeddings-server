@@ -27,7 +27,6 @@ const MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-small';
 // Limits
 // -------------------------------------------------------
 const MAX_CHARS_TEXT = 8000;
-const MAX_CHARS_SUMMARY = 255;
 
 // -------------------------------------------------------
 // Helpers
@@ -60,12 +59,10 @@ app.post('/embed', async (req, res) => {
       return res.status(400).json({ error: 'text is required' });
     }
 
+    // ✅ Text exists only in memory
     const safeText = safeTruncate(embedText, MAX_CHARS_TEXT);
-    const summary = safeTruncate(
-      safeText.split('\n')[0],
-      MAX_CHARS_SUMMARY
-    );
 
+    // ✅ Create embedding
     const embedResult = await openai.embeddings.create({
       model: MODEL,
       input: safeText
@@ -74,19 +71,16 @@ app.post('/embed', async (req, res) => {
     const embedding = embedResult.data[0].embedding;
     const pgVector = toPgVector(embedding);
 
+    // ✅ Vector‑only persistence
     const sql = `
       INSERT INTO ticket_embeddings (
         ticket_number,
-        summary,
-        notes,
         embedding,
         created_at
       )
-      VALUES ($1, $2, $3, $4::vector, NOW())
+      VALUES ($1, $2::vector, NOW())
       ON CONFLICT (ticket_number)
       DO UPDATE SET
-        summary    = EXCLUDED.summary,
-        notes      = EXCLUDED.notes,
         embedding  = EXCLUDED.embedding,
         created_at = NOW()
       RETURNING id;
@@ -94,8 +88,6 @@ app.post('/embed', async (req, res) => {
 
     const result = await pool.query(sql, [
       ticketNumber,
-      summary,
-      safeText,
       pgVector
     ]);
 
@@ -130,6 +122,7 @@ app.post('/match', async (req, res) => {
       return res.status(400).json({ error: 'text is empty after truncation' });
     }
 
+    // ✅ Embed query text
     const embedResult = await openai.embeddings.create({
       model: MODEL,
       input: safeText
@@ -141,7 +134,6 @@ app.post('/match', async (req, res) => {
     const sql = `
       SELECT
         ticket_number,
-        summary,
         1 - (embedding <-> $1::vector) AS similarity
       FROM ticket_embeddings
       WHERE embedding IS NOT NULL
