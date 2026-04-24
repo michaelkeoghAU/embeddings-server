@@ -134,10 +134,10 @@ app.post('/match', async (req, res) => {
     const sql = `
       SELECT
         ticket_number,
-        1 - (embedding <-> $1::vector) AS similarity
+        1 - (embedding <=> $1::vector) AS similarity
       FROM ticket_embeddings
       WHERE embedding IS NOT NULL
-      ORDER BY embedding <-> $1::vector
+      ORDER BY embedding <=> $1::vector
       LIMIT $2;
     `;
 
