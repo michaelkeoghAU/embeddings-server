@@ -1,6 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const OpenAI = require('openai');
+console.log('VERSION 2026-08-26 TEST');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
